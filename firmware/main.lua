@@ -103,11 +103,8 @@ local function task_main()
             time_str   = ntp.hhmm(),
         })
 
-        -- 上报（断网重连）
-        mqttcli.ensure()
-        if mqttcli.isConnected() then
-            mqttcli.report(d)
-        end
+        -- 上报（mqtt 库 autoreconn 自动断网重连）
+        mqttcli.report(d)
 
         sys.wait(config.report_interval)
     end
