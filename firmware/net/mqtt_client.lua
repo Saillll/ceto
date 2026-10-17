@@ -1,23 +1,25 @@
 --[[
     mqtt_client.lua —— MQTT/TLS 上报 + 断网重连
-    库：LuatOS mqtt（mqttc）/ socket（API 以官方文档为准）
+    库：LuatOS mqtt
+    官方 API（docs.openluat.com/osapi/core/mqtt/）：
+      mqtt.create(adapter, host, port, ssl, opts)
+      mqttc:auth(client_id, username, password, cleanSession)
+      mqttc:keepalive(time) / mqttc:autoreconn(reconnect, reconnect_time)
+      mqttc:on(cb) / mqttc:connect() / mqttc:ready()
+      mqttc:subscribe(topic, qos) / mqttc:publish(topic, data, qos, retain)
+      mqttc:state()  -- STATE_DISCONNECT / STATE_SCONNECT / STATE_MQTT / STATE_READY
 
-    策略：
-      - 长连接，低功耗模式
-      - 断网自动重连（不补数据）
-      - 上报：水温/气温/湿度/电量/GPS/ICCID/ID
+    策略：长连接；autoreconn 自动重连（不补数据）。
 ]]
 
 local mqtt = require "mqtt"
 local json = require "json"
 
 local M = {}
-
 local cfg
 local cli
-local connected = false
 
-local function build_payload(d)
+local function payload(d)
     return json.encode({
         dev_id     = d.dev_id,
         dev_name   = d.dev_name,
@@ -35,29 +37,23 @@ end
 function M.init(c)
     cfg = c
     cli = mqtt.create(nil, cfg.host, cfg.port, cfg.tls)
-    cli:auth(cfg.client_id, cfg.username, cfg.password, false)
-    cli:keepalive(cfg.keepalive)
-    cli:on("conack", function() connected = true end)
-    cli:on("discon", function() connected = false end)
+    cli:auth(cfg.client_id, cfg.username, cfg.password, true)
+    cli:keepalive(cfg.keepalive or 60)
+    cli:autoreconn(true, 3000)   -- 断网自动重连
+    cli:on(function(mqttc, evt, data)
+        log.info("mqtt", evt)
+    end)
+    cli:connect()
 end
 
-function M.isConnected() return connected end
+function M.isConnected()
+    return cli and cli:state() == mqtt.STATE_READY
+end
 
 function M.report(d)
-    if not connected then return false end
-    local topic = "$thing/up/property/" .. d.dev_id   -- 按腾讯云 Topic 规则
-    local ok = cli:publish(topic, build_payload(d), 0)
-    return ok
-end
-
--- 断网重连（在任务里循环调用）
-function M.ensure()
-    if not connected then
-        cli:connect()
-        -- 等待 conack，超时返回
-        sys.waitUntil("mqtt_conack", 10000)
-    end
-    return connected
+    if not M.isConnected() then return false end
+    local topic = cfg.topic or ("$thing/up/property/" .. d.dev_id)  -- 按腾讯云 Topic 规则
+    return cli:publish(topic, payload(d), 0)
 end
 
 return M
